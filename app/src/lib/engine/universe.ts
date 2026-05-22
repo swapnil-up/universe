@@ -1,13 +1,20 @@
 import type { Cell, World, WorldSettings } from './data';
 import { DEFAULT_SETTINGS, GRID_SIZE, INITIAL_SEEKERS, INITIAL_PLANTS } from './data';
 export { GRID_SIZE } from './data';
-import { wrapCoordinate, getNeighbors, findCellAt, applyEntropy } from './physics';
+import {
+	applyEntropy, applyMoveCost,
+	checkFeeding, checkReproduction,
+	wrapCoordinate
+} from './physics';
+import { createRng, randomDirection } from './rng';
 
-function seededRandom(seed: number): () => number {
-	return function () {
-		seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-		return seed / 0x7fffffff;
-	};
+interface TickContext {
+	cells: Cell[];
+	deadIds: Set<number>;
+	nextId: number;
+	width: number;
+	height: number;
+	settings: World['settings'];
 }
 
 export function createInitialWorld(
@@ -18,7 +25,7 @@ export function createInitialWorld(
 ): World {
 	const cells: Cell[] = [];
 	let id = 0;
-	const random = seededRandom(seed);
+	const random = createRng(seed);
 
 	for (let i = 0; i < INITIAL_SEEKERS; i++) {
 		cells.push({
@@ -45,64 +52,138 @@ export function createInitialWorld(
 	return { tick: 0, width, height, cells, settings };
 }
 
-export function nextTick(
-	world: World,
-	randomDir: () => { x: number; y: number }
-): World {
-	const posMap = new Map<string, Cell>();
-	for (const c of world.cells) {
-		posMap.set(`${c.x},${c.y}`, c);
+// ---- Pipeline stages ----
+
+function stageEntropy(ctx: TickContext): TickContext {
+	return {
+		...ctx,
+		cells: ctx.cells.map(c => applyEntropy(c, ctx.settings))
+	};
+}
+
+function stageInteractions(ctx: TickContext): TickContext {
+	const deadIds = new Set(ctx.deadIds);
+	const cellMap = new Map(ctx.cells.map(c => [c.id, { ...c }] as const));
+
+	const alivePlants = () => ctx.cells.filter(c => c.type === 'PLANT' && !deadIds.has(c.id));
+
+	// Feeding: seekers eat plants within searchRadius
+	for (const cell of ctx.cells) {
+		if (cell.type !== 'SEEKER' || deadIds.has(cell.id)) continue;
+
+		const result = checkFeeding(cell, alivePlants(), ctx.settings, ctx.width, ctx.height);
+		if (result) {
+			cellMap.set(cell.id, result.newSeeker);
+			deadIds.add(result.plantId);
+		}
 	}
 
-	const deadIds = new Set<number>();
-	const survivors: Cell[] = [];
+	// Reproduction: healthy plants spawn children
+	let nextId = ctx.nextId;
+	const spawns: Cell[] = [];
 
-	for (const cell of world.cells) {
-		if (cell.energy <= 0) {
-			deadIds.add(cell.id);
-			continue;
+	for (const cell of ctx.cells) {
+		if (cell.type !== 'PLANT' || deadIds.has(cell.id)) continue;
+
+		const current = cellMap.get(cell.id)!;
+		const result = checkReproduction(current, ctx.cells, ctx.settings, ctx.width, ctx.height);
+		if (result) {
+			cellMap.set(cell.id, result.parent);
+			spawns.push({
+				id: nextId++,
+				type: 'PLANT',
+				energy: 40,
+				x: result.childX,
+				y: result.childY,
+				metadata: { age: 0 }
+			});
 		}
+	}
 
-		let current = cell;
+	return {
+		...ctx,
+		cells: [...Array.from(cellMap.values()), ...spawns],
+		deadIds,
+		nextId
+	};
+}
 
-		// Seekers eat plants
-		if (cell.type === 'SEEKER') {
-			const neighbors = getNeighbors(cell.x, cell.y, world.width, world.height);
-			for (const n of neighbors) {
-				const neighbor = findCellAt(world.cells, n.x, n.y);
-				if (neighbor && neighbor.type === 'PLANT' && !deadIds.has(neighbor.id)) {
-					current = { ...current, energy: Math.min(100, current.energy + 20) };
-					deadIds.add(neighbor.id);
-					break;
-				}
-			}
+function stageMovement(ctx: TickContext, randomDir: () => { x: number; y: number }): TickContext {
+	const cellMap = new Map(ctx.cells.map(c => [c.id, { ...c }] as const));
+
+	// Track positions progressively to handle same-tick collisions
+	const occupied = new Map<string, number>();
+	for (const c of ctx.cells) {
+		occupied.set(`${c.x},${c.y}`, c.id);
+	}
+
+	for (const cell of ctx.cells) {
+		if (cell.type !== 'SEEKER' || ctx.deadIds.has(cell.id)) continue;
+
+		const dir = randomDir();
+		const newX = wrapCoordinate(cell.x + dir.x, ctx.width);
+		const newY = wrapCoordinate(cell.y + dir.y, ctx.height);
+		const key = `${newX},${newY}`;
+
+		const occupant = occupied.get(key);
+		if (occupant !== undefined && occupant !== cell.id) {
+			continue; // spot taken — stay put, no move cost
 		}
 
 		// Move
-		if (current.type === 'SEEKER') {
-			const dir = randomDir();
-			const newX = wrapCoordinate(current.x + dir.x, world.width);
-			const newY = wrapCoordinate(current.y + dir.y, world.height);
-			if (!posMap.has(`${newX},${newY}`) || posMap.get(`${newX},${newY}`)?.id === current.id) {
-				current = { ...current, x: newX, y: newY };
-			}
-		}
+		occupied.delete(`${cell.x},${cell.y}`);
+		occupied.set(key, cell.id);
 
-		// Entropy - use physics calculation
-		current = applyEntropy(current, world.settings);
-
-		if (current.energy > 0) {
-			survivors.push(current);
-		} else {
-			deadIds.add(current.id);
-		}
+		const movedCell: Cell = {
+			...cell,
+			x: newX, y: newY,
+			metadata: { ...cell.metadata, lastDirection: dir, age: cell.metadata.age + 1 }
+		};
+		cellMap.set(cell.id, applyMoveCost(movedCell, true, ctx.settings));
 	}
+
+	return {
+		...ctx,
+		cells: ctx.cells.map(c => cellMap.has(c.id) ? cellMap.get(c.id)! : c)
+	};
+}
+
+function stageFilterDead(ctx: TickContext): TickContext {
+	return {
+		...ctx,
+		cells: ctx.cells.filter(c => c.energy > 0 && !ctx.deadIds.has(c.id))
+	};
+}
+
+// ---- Public API ----
+
+export function nextTick(
+	world: World,
+	seed: number
+): World {
+	const rng = createRng(seed);
+	const randomDir = () => randomDirection(rng);
+	const maxId = world.cells.reduce((max, c) => Math.max(max, c.id), 0);
+
+	let ctx: TickContext = {
+		cells: [...world.cells],
+		deadIds: new Set(),
+		nextId: maxId + 1,
+		width: world.width,
+		height: world.height,
+		settings: world.settings
+	};
+
+	ctx = stageEntropy(ctx);
+	ctx = stageInteractions(ctx);
+	ctx = stageMovement(ctx, randomDir);
+	ctx = stageFilterDead(ctx);
 
 	return {
 		tick: world.tick + 1,
 		width: world.width,
 		height: world.height,
-		cells: survivors,
+		cells: ctx.cells,
 		settings: world.settings
 	};
 }

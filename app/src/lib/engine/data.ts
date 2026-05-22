@@ -24,6 +24,7 @@ export interface World {
 		readonly eatGain: number;
 		readonly reproductionThreshold: number;
 		readonly reproductionCost: number;
+		readonly searchRadius: number;
 	};
 }
 
@@ -34,6 +35,7 @@ export interface WorldSettings {
 	eatGain: number;
 	reproductionThreshold: number;
 	reproductionCost: number;
+	searchRadius: number;
 }
 
 export const DEFAULT_SETTINGS: WorldSettings = {
@@ -42,7 +44,8 @@ export const DEFAULT_SETTINGS: WorldSettings = {
 	moveCost: 2,
 	eatGain: 20,
 	reproductionThreshold: 80,
-	reproductionCost: 40
+	reproductionCost: 40,
+	searchRadius: 1
 };
 
 export const GRID_SIZE = 20;

@@ -1,6 +1,9 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Canvas from '$lib/components/Canvas.svelte';
-	import { createInitialWorld, nextTick } from '$lib/engine/universe';
+	import { createInitialWorld } from '$lib/engine/universe';
+	import { createSimulation } from '$lib/engine/simulation';
+	import type { SimController } from '$lib/engine/simulation';
 	import { TICK_RATE, HISTORY_SIZE, DEFAULT_SETTINGS, GRID_SIZE } from '$lib/engine/data';
 	import type { World, WorldSettings } from '$lib/engine/data';
 
@@ -9,57 +12,51 @@
 	let isRunning = $state(false);
 	let tickRate = $state(TICK_RATE);
 	let seed = $state(12345);
-	
-	function getNextRandomDir() {
-		const dirs = [{ x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: -1 }, { x: 0, y: 1 }];
-		return dirs[Math.floor(Math.random() * dirs.length)];
-	}
-	let tickInterval: ReturnType<typeof setInterval> | null = null;
-
 	let settings = $state<WorldSettings>({ ...DEFAULT_SETTINGS });
+	let sim: SimController;
 
-	function startLoop() {
-		if (tickInterval) clearInterval(tickInterval);
-		tickInterval = setInterval(() => {
-			if (isRunning) {
-				world = nextTick(world, getNextRandomDir);
-				history = [...history.slice(-(HISTORY_SIZE - 1)), world];
-				
-				if (world.cells.length === 0) {
-					isRunning = false;
-				}
-			}
-		}, 1000 / tickRate);
+	function onTick(newWorld: World) {
+		world = newWorld;
+		history = [...history.slice(-(HISTORY_SIZE - 1)), newWorld];
+		if (newWorld.cells.length === 0) {
+			isRunning = false;
+		}
 	}
+
+	onMount(() => {
+		sim = createSimulation(world, seed, tickRate, onTick);
+		return () => sim.destroy();
+	});
+
+	$effect(() => {
+		if (sim) sim.setTickRate(tickRate);
+	});
 
 	function togglePlay() {
-		isRunning = !isRunning;
-	}
-
-	function reset() {
-		world = createInitialWorld(GRID_SIZE, GRID_SIZE, settings, seed);
-		history = [];
+		if (isRunning) {
+			sim.stop();
+			isRunning = false;
+		} else {
+			sim.start();
+			isRunning = true;
+		}
 	}
 
 	function step() {
-		world = nextTick(world, getNextRandomDir);
-		history = [...history.slice(-(HISTORY_SIZE - 1)), world];
+		if (isRunning) return;
+		sim.step();
+	}
+
+	function reset() {
+		const w = createInitialWorld(GRID_SIZE, GRID_SIZE, settings, seed);
+		sim.reset(w, seed);
+		history = [];
+		isRunning = false;
 	}
 
 	function applySettings() {
-		world = { ...world, settings: { ...settings } };
+		sim?.updateSettings(settings);
 	}
-
-	function applyNextTick() {
-		world = { ...world, settings: { ...settings } };
-	}
-
-	$effect(() => {
-		startLoop();
-		return () => {
-			if (tickInterval) clearInterval(tickInterval);
-		};
-	});
 
 	const seekers = $derived(world.cells.filter(c => c.type === 'SEEKER').length);
 	const plants = $derived(world.cells.filter(c => c.type === 'PLANT').length);
@@ -108,12 +105,19 @@
 				<input type="range" min="5" max="50" bind:value={settings.eatGain} />
 			</label>
 			<label>
+				Search Radius: {settings.searchRadius}
+				<input type="range" min="1" max="5" bind:value={settings.searchRadius} />
+			</label>
+			<label>
 				Reproduction Threshold: {settings.reproductionThreshold}
 				<input type="range" min="50" max="100" bind:value={settings.reproductionThreshold} />
 			</label>
+			<label>
+				Reproduction Cost: {settings.reproductionCost}
+				<input type="range" min="10" max="80" bind:value={settings.reproductionCost} />
+			</label>
 			<div class="button-group">
-				<button onclick={applySettings}>Apply Now</button>
-				<button onclick={applyNextTick}>Apply Next Tick</button>
+				<button onclick={applySettings}>Apply</button>
 			</div>
 		</div>
 
