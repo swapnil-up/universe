@@ -6,7 +6,7 @@ import {
 	checkFeeding, checkReproduction,
 	wrapCoordinate
 } from './physics';
-import { createRng, randomDirection } from './rng';
+import { createRng, randomDirection, type Dir } from './rng';
 
 interface TickContext {
 	cells: Cell[];
@@ -15,6 +15,15 @@ interface TickContext {
 	width: number;
 	height: number;
 	settings: World['settings'];
+	randomDir: () => Dir;
+}
+
+function pipe<T>(...fns: Array<(arg: T) => T>): (arg: T) => T {
+	return (arg: T) => fns.reduce((acc, fn) => fn(acc), arg);
+}
+
+function times<T>(count: number, fn: (index: number) => T): T[] {
+	return Array.from({ length: count }, (_, i) => fn(i));
 }
 
 export function createInitialWorld(
@@ -23,31 +32,25 @@ export function createInitialWorld(
 	settings: WorldSettings = DEFAULT_SETTINGS,
 	seed: number = 12345
 ): World {
-	const cells: Cell[] = [];
-	let id = 0;
-	const random = createRng(seed);
-
-	for (let i = 0; i < INITIAL_SEEKERS; i++) {
-		cells.push({
-			id: id++,
-			type: 'SEEKER',
-			energy: 50 + Math.floor(random() * 30),
-			x: Math.floor(random() * width),
-			y: Math.floor(random() * height),
+	const rng = createRng(seed);
+	const cells = [
+		...times(INITIAL_SEEKERS, (i) => ({
+			id: i,
+			type: 'SEEKER' as const,
+			energy: 50 + Math.floor(rng() * 30),
+			x: Math.floor(rng() * width),
+			y: Math.floor(rng() * height),
 			metadata: { age: 0 }
-		});
-	}
-
-	for (let i = 0; i < INITIAL_PLANTS; i++) {
-		cells.push({
-			id: id++,
-			type: 'PLANT',
-			energy: 40 + Math.floor(random() * 40),
-			x: Math.floor(random() * width),
-			y: Math.floor(random() * height),
+		})),
+		...times(INITIAL_PLANTS, (i) => ({
+			id: INITIAL_SEEKERS + i,
+			type: 'PLANT' as const,
+			energy: 40 + Math.floor(rng() * 40),
+			x: Math.floor(rng() * width),
+			y: Math.floor(rng() * height),
 			metadata: { age: 0 }
-		});
-	}
+		}))
+	];
 
 	return { tick: 0, width, height, cells, settings };
 }
@@ -108,7 +111,7 @@ function stageInteractions(ctx: TickContext): TickContext {
 	};
 }
 
-function stageMovement(ctx: TickContext, randomDir: () => { x: number; y: number }): TickContext {
+function stageMovement(ctx: TickContext): TickContext {
 	const cellMap = new Map(ctx.cells.map(c => [c.id, { ...c }] as const));
 
 	// Track positions progressively to handle same-tick collisions
@@ -120,7 +123,7 @@ function stageMovement(ctx: TickContext, randomDir: () => { x: number; y: number
 	for (const cell of ctx.cells) {
 		if (cell.type !== 'SEEKER' || ctx.deadIds.has(cell.id)) continue;
 
-		const dir = randomDir();
+		const dir = ctx.randomDir();
 		const newX = wrapCoordinate(cell.x + dir.x, ctx.width);
 		const newY = wrapCoordinate(cell.y + dir.y, ctx.height);
 		const key = `${newX},${newY}`;
@@ -162,22 +165,22 @@ export function nextTick(
 	seed: number
 ): World {
 	const rng = createRng(seed);
-	const randomDir = () => randomDirection(rng);
 	const maxId = world.cells.reduce((max, c) => Math.max(max, c.id), 0);
 
-	let ctx: TickContext = {
+	const ctx = pipe(
+		stageEntropy,
+		stageInteractions,
+		stageMovement,
+		stageFilterDead
+	)({
 		cells: [...world.cells],
 		deadIds: new Set(),
 		nextId: maxId + 1,
 		width: world.width,
 		height: world.height,
-		settings: world.settings
-	};
-
-	ctx = stageEntropy(ctx);
-	ctx = stageInteractions(ctx);
-	ctx = stageMovement(ctx, randomDir);
-	ctx = stageFilterDead(ctx);
+		settings: world.settings,
+		randomDir: () => randomDirection(rng)
+	});
 
 	return {
 		tick: world.tick + 1,
