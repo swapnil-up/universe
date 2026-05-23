@@ -27,3 +27,5 @@ export const DIRECTIONS: readonly Dir[] = [
 export function randomDirection(rng: Rng): Dir {
 	return DIRECTIONS[randomInt(rng, DIRECTIONS.length)];
 }
+
+
