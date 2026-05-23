@@ -5,6 +5,7 @@
 A functional ecosystem simulation — cells pushed through pure mathematical rules in an immutable sandbox.
 
 [![Stars](https://img.shields.io/github/stars/swapnil-up/universe?style=for-the-badge)](https://github.com/swapnil-up/universe/stargazers)
+[![Demo](https://img.shields.io/badge/demo-live-3498db?style=for-the-badge)](https://swapnil-up.github.io/universe/)
 
 </div>
 
@@ -20,7 +21,7 @@ pnpm install
 pnpm dev
 ```
 
-The simulation runs at `http://localhost:5173`. Use the sidebar to play, pause, step through ticks, and tweak the laws of physics in real-time via God Mode.
+Then open `http://localhost:5173`. Use the floating controls to play, pause, and step through ticks. Tweak the laws of physics in real-time via God Mode.
 
 ## Project Structure
 
@@ -29,18 +30,22 @@ app/
 ├── src/
 │   ├── lib/
 │   │   ├── components/
-│   │   │   └── Canvas.svelte    # Canvas renderer (Action layer)
+│   │   │   └── Canvas.svelte    # Canvas renderer — pan, zoom, overlays
 │   │   └── engine/
-│   │       ├── data.ts          # Types, constants, default settings
-│   │       ├── physics.ts       # Pure functions — entropy, movement, feeding
-│   │       └── universe.ts      # nextTick pipeline and world initialization
+│   │       ├── data.ts          # Types, constants, presets, species config
+│   │       ├── primitives.ts    # Pure math — wrapCoordinate, pipe, times
+│   │       ├── rng.ts           # Seeded RNG — nextRandom, randomDir
+│   │       ├── spatial.ts       # Spatial index — buildIndex, findInRadius
+│   │       ├── physics.ts       # applyEntropy (pure decay function)
+│   │       ├── universe.ts      # nextTick pipeline, agent loop, decisions
+│   │       ├── simulation.ts    # SimController — timing, orchestration
+│   │       └── renderer.ts      # Canvas drawing — species colors, HSL
 │   ├── routes/
 │   │   ├── +layout.ts           # Static prerender config
-│   │   └── +page.svelte         # Main UI — controls, God Mode, stats
-│   ├── app.d.ts
+│   │   └── +page.svelte         # Main UI — controls, God Mode, stats, log
 │   └── app.html
+├── .github/workflows/deploy.yml
 ├── package.json
-├── pnpm-lock.yaml
 ├── svelte.config.js
 ├── tsconfig.json
 └── vite.config.ts
@@ -48,20 +53,20 @@ app/
 
 ## Architecture
 
-| Layer | Responsibility |
-|-------|---------------|
-| **I/O** | Rendering, user controls |
-| **Timeline** | History, pause, rewind |
-| **Evolution** | Maps rules over the entire grid |
-| **Rules** | Individual cell logic — entropy, eating, movement |
-| **Primitives** | Grid math — neighbors, wrapping |
+| Layer | File | Responsibility |
+|-------|------|---------------|
+| **Primitives** | `primitives.ts` | `wrapCoordinate`, `pipe`, `times` |
+| **Domain** | `physics.ts`, `rng.ts`, `spatial.ts` | Entropy, RNG, spatial index |
+| **Application** | `universe.ts` | `nextTick` pipeline, agent loop, species decisions |
+| **I/O** | `simulation.ts`, `renderer.ts` | Timing, orchestration, canvas drawing |
+| **UI** | `+page.svelte`, `Canvas.svelte` | Controls, stats, event log, pan/zoom |
 
 ## Key Principles
 
-- **Immutability** — Never mutate state. Return new versions.
-- **Pure Functions** — No `Math.random()` or `new Date()` in physics. Pass seeds in.
-- **Separation** — Calculations (logic) separate from Actions (side effects).
-- **Deterministic** — Same seed + same rules = same outcome every time.
+- **Immutability** — Every tick produces a frozen snapshot. No state is mutated.
+- **Pure Functions** — No `Math.random()` or `new Date()` in the engine. Seeded RNG with explicit state threading.
+- **Stratified Design** — Each layer depends only on layers below it. Primitives → Domain → Application → I/O → UI.
+- **Deterministic** — Same seed + same settings = identical outcome every time.
 
 ## Contributing
 
