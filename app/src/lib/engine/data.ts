@@ -4,6 +4,16 @@ export type Species = 'scout' | 'hunter' | 'drifter';
 
 export const SPECIES: Species[] = ['scout', 'hunter', 'drifter'];
 
+export interface SpeciesConfig {
+	readonly perception: number;
+}
+
+export const SPECIES_CONFIG: Record<Species, SpeciesConfig> = {
+	scout: { perception: 3 },
+	hunter: { perception: 4 },
+	drifter: { perception: 1 },
+};
+
 export interface Cell {
 	readonly id: number;
 	readonly type: CellType;
@@ -13,6 +23,8 @@ export interface Cell {
 	readonly y: number;
 	readonly metadata: {
 		readonly lastDirection?: { x: number; y: number };
+		readonly lastAction?: CellAction['type'];
+		readonly lastReason?: string;
 		readonly age: number;
 		readonly seed: number;
 	};
@@ -30,7 +42,7 @@ export interface World {
 		readonly eatGain: number;
 		readonly reproductionThreshold: number;
 		readonly reproductionCost: number;
-		readonly searchRadius: number;
+		readonly growthRatePlant: number;
 	};
 }
 
@@ -41,7 +53,7 @@ export interface WorldSettings {
 	readonly eatGain: number;
 	readonly reproductionThreshold: number;
 	readonly reproductionCost: number;
-	readonly searchRadius: number;
+	readonly growthRatePlant: number;
 }
 
 export interface WorldPreset {
@@ -60,7 +72,7 @@ export const DEFAULT_SETTINGS: WorldSettings = {
 	eatGain: 20,
 	reproductionThreshold: 80,
 	reproductionCost: 40,
-	searchRadius: 1
+	growthRatePlant: 2.0,
 };
 
 export const PRESETS: WorldPreset[] = [
@@ -85,7 +97,7 @@ export const PRESETS: WorldPreset[] = [
 			eatGain: 15,
 			reproductionThreshold: 90,
 			reproductionCost: 50,
-			searchRadius: 2
+			growthRatePlant: 1.0,
 		}
 	},
 	{
@@ -101,7 +113,7 @@ export const PRESETS: WorldPreset[] = [
 			eatGain: 25,
 			reproductionThreshold: 60,
 			reproductionCost: 30,
-			searchRadius: 3
+			growthRatePlant: 3.0,
 		}
 	},
 	{
@@ -117,7 +129,7 @@ export const PRESETS: WorldPreset[] = [
 			eatGain: 30,
 			reproductionThreshold: 85,
 			reproductionCost: 45,
-			searchRadius: 2
+			growthRatePlant: 2.0,
 		}
 	}
 ];
@@ -126,5 +138,26 @@ export const GRID_SIZE = 20;
 export const INITIAL_SEEKERS = 3;
 export const INITIAL_PLANTS = 10;
 export const DUST_TICKS = 5;
+export const DUST_DECAY_RATE = 1;
+export const INITIAL_CHILD_ENERGY = 40;
 export const HISTORY_SIZE = 10;
 export const TICK_RATE = 2;
+
+export type CellAction =
+	| { readonly type: 'WAIT'; readonly reason?: string }
+	| { readonly type: 'MOVE'; readonly x: number; readonly y: number; readonly reason?: string }
+	| { readonly type: 'EAT'; readonly targetId: number; readonly reason?: string }
+	| { readonly type: 'REPRODUCE'; readonly childX: number; readonly childY: number; readonly reason?: string };
+
+export interface Perception {
+	readonly own: Cell;
+	readonly nearbyPlants: readonly Cell[];
+	readonly nearbySeekers: readonly Cell[];
+	readonly emptyNeighbors: readonly Array<{ x: number; y: number }>;
+	readonly settings: WorldSettings;
+	readonly width: number;
+	readonly height: number;
+	readonly tick: number;
+}
+
+export type Decide = (perception: Perception, rand: number) => CellAction;

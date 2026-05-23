@@ -16,7 +16,7 @@ export interface SimController {
 export function createSimulation(
 	initialWorld: World,
 	tickRate: number,
-	onTick: (world: World, elapsed: number) => void,
+	onTick: (world: World, elapsed: number, events: readonly string[]) => void,
 ): SimController {
 	let currentWorld = initialWorld;
 	let currentTickRate = tickRate;
@@ -25,9 +25,10 @@ export function createSimulation(
 
 	function tick() {
 		const start = performance.now();
-		currentWorld = nextTick(currentWorld);
+		const result = nextTick(currentWorld);
+		currentWorld = result.world;
 		const elapsed = performance.now() - start;
-		onTick(currentWorld, elapsed);
+		onTick(currentWorld, elapsed, result.events);
 		if (currentWorld.cells.length === 0) {
 			stop();
 		}
@@ -55,7 +56,7 @@ export function createSimulation(
 	function reset(world: World) {
 		stop();
 		currentWorld = world;
-		onTick(currentWorld, 0);
+		onTick(currentWorld, 0, []);
 	}
 
 	function setTickRate(rate: number) {
@@ -68,7 +69,7 @@ export function createSimulation(
 
 	function updateSettings(settings: World['settings']) {
 		currentWorld = { ...currentWorld, settings: { ...settings } };
-		onTick(currentWorld, 0);
+		onTick(currentWorld, 0, []);
 	}
 
 	function destroy() {
@@ -76,7 +77,7 @@ export function createSimulation(
 	}
 
 	return {
-		get world() { return currentWorld; },
+		get world() { return { ...currentWorld, cells: [...currentWorld.cells] }; },
 		get running() { return isRunning; },
 		start, stop, step, reset, setTickRate, updateSettings, destroy
 	};

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { World } from '$lib/engine/data';
+	import type { World, Cell } from '$lib/engine/data';
+	import { SPECIES_CONFIG } from '$lib/engine/data';
 	import type { Renderer } from '$lib/engine/renderer';
 	import { cellRenderer } from '$lib/engine/renderer';
 
@@ -8,9 +9,10 @@
 		cellSize?: number;
 		renderer?: Renderer;
 		oncellclick?: (pos: { x: number; y: number }) => void;
+		selectedCell?: Cell | null;
 	}
 
-	let { world, cellSize = 20, renderer = cellRenderer, oncellclick }: Props = $props();
+	let { world, cellSize = 20, renderer = cellRenderer, oncellclick, selectedCell }: Props = $props();
 
 	let canvas: HTMLCanvasElement;
 	let container: HTMLDivElement;
@@ -33,7 +35,35 @@
 		const ctx = canvas.getContext('2d');
 		if (!ctx) return;
 		renderer.render(ctx, world, cellSize);
+
+		if (selectedCell) {
+			drawOverlay(ctx, selectedCell);
+		}
 	});
+
+	function drawOverlay(ctx: CanvasRenderingContext2D, cell: Cell) {
+		if (cell.type === 'SEEKER' && cell.species) {
+			const config = SPECIES_CONFIG[cell.species];
+			if (config) {
+				const cx = cell.x * cellSize + cellSize / 2;
+				const cy = cell.y * cellSize + cellSize / 2;
+				const radius = config.perception * cellSize;
+
+				ctx.beginPath();
+				ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+				ctx.fill();
+				ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+				ctx.lineWidth = 1;
+				ctx.setLineDash([4, 4]);
+				ctx.stroke();
+				ctx.setLineDash([]);
+
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+				ctx.fillRect(cell.x * cellSize, cell.y * cellSize, cellSize, cellSize);
+			}
+		}
+	}
 
 	function handleMouseDown(e: MouseEvent) {
 		if (e.button !== 0) return;

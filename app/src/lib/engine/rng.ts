@@ -1,17 +1,3 @@
-export type Rng = () => number;
-
-export function createRng(seed: number): Rng {
-	let s = seed | 0;
-	return function () {
-		s = (s * 1103515245 + 12345) & 0x7fffffff;
-		return s / 0x80000000;
-	};
-}
-
-export function randomInt(rng: Rng, max: number): number {
-	return Math.floor(rng() * max);
-}
-
 export interface Dir {
 	readonly x: number;
 	readonly y: number;
@@ -24,8 +10,11 @@ export const DIRECTIONS: readonly Dir[] = [
 	{ x: 0, y: 1 }
 ];
 
-export function randomDirection(rng: Rng): Dir {
-	return DIRECTIONS[randomInt(rng, DIRECTIONS.length)];
+export function nextRandom(state: number): [number, number] {
+	const s = (state * 1103515245 + 12345) & 0x7fffffff;
+	return [s / 0x80000000, s];
 }
 
-
+export function randomDir(rand: number): Dir {
+	return DIRECTIONS[Math.floor(rand * DIRECTIONS.length)];
+}

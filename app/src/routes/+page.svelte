@@ -4,8 +4,8 @@
 	import { createInitialWorld } from '$lib/engine/universe';
 	import { createSimulation } from '$lib/engine/simulation';
 	import type { SimController } from '$lib/engine/simulation';
-	import { TICK_RATE, HISTORY_SIZE, DEFAULT_SETTINGS, GRID_SIZE, INITIAL_SEEKERS, INITIAL_PLANTS, PRESETS } from '$lib/engine/data';
-	import type { Cell, World, WorldSettings, WorldPreset } from '$lib/engine/data';
+	import { TICK_RATE, HISTORY_SIZE, DEFAULT_SETTINGS, GRID_SIZE, INITIAL_SEEKERS, INITIAL_PLANTS, PRESETS, SPECIES_CONFIG } from '$lib/engine/data';
+	import type { Cell, World, WorldSettings, WorldPreset, Species } from '$lib/engine/data';
 
 	const STORAGE_KEY = 'entropy-engine-state';
 
@@ -42,7 +42,8 @@
 	let history = $state<World[]>([]);
 	let isRunning = $state(false);
 	let tickRate = $state(TICK_RATE);
-	let tickTime = $state(0);
+	let tickTimes = $state<number[]>([]);
+	const TICK_WINDOW = 30;
 	let seed = $state(12345);
 	let settings = $state<WorldSettings>({ ...DEFAULT_SETTINGS });
 	let selectedPreset = $state(PRESETS[0]);
@@ -50,6 +51,7 @@
 	let initialSeekersCount = $state(INITIAL_SEEKERS);
 	let initialPlantsCount = $state(INITIAL_PLANTS);
 	let selectedCell = $state<Cell | null>(null);
+	let eventLog = $state<string[]>([]);
 	let sim: SimController;
 
 	function handleCellClick(pos: { x: number; y: number }) {
@@ -57,14 +59,24 @@
 		selectedCell = cell;
 	}
 
-	function onTick(newWorld: World, elapsed: number) {
+	function onTick(newWorld: World, elapsed: number, events: readonly string[]) {
 		world = newWorld;
-		tickTime = elapsed;
+		tickTimes = [...tickTimes, elapsed].slice(-TICK_WINDOW);
 		history = [...history.slice(-(HISTORY_SIZE - 1)), newWorld];
+		if (events.length > 0) {
+			const tickHeader = `─ tick ${newWorld.tick} ─`;
+			eventLog = [...eventLog, tickHeader, ...events].slice(-10000);
+		}
 		if (newWorld.cells.length === 0) {
 			isRunning = false;
 		}
 	}
+
+	const avgTickTime = $derived(
+		tickTimes.length > 0
+			? tickTimes.reduce((a, b) => a + b, 0) / tickTimes.length
+			: 0
+	);
 
 	onMount(() => {
 		const loaded = loadState();
@@ -106,6 +118,7 @@
 		sim?.reset(w);
 		history = [];
 		isRunning = false;
+		tickTimes = [];
 		saveState();
 	}
 
@@ -114,9 +127,9 @@
 		{ key: 'entropyRatePlant' as const, label: 'Plant Entropy', min: 0.1, max: 5, step: 0.1, tip: 'Energy lost per tick as % of current energy for plants.', fmt: (v: number) => v + '%' },
 		{ key: 'moveCost' as const, label: 'Move Cost', min: 0, max: 10, step: 1, tip: 'Energy deducted per successful move.', fmt: (v: number) => '' + v },
 		{ key: 'eatGain' as const, label: 'Eat Gain', min: 5, max: 50, step: 1, tip: 'Energy gained when a seeker eats a plant.', fmt: (v: number) => '' + v },
-		{ key: 'searchRadius' as const, label: 'Search Radius', min: 1, max: 5, step: 1, tip: 'How far seekers scan for plants (in cells).', fmt: (v: number) => '' + v },
 		{ key: 'reproductionThreshold' as const, label: 'Reproduction Threshold', min: 50, max: 100, step: 1, tip: 'Minimum energy for a plant to reproduce.', fmt: (v: number) => '' + v },
-		{ key: 'reproductionCost' as const, label: 'Reproduction Cost', min: 10, max: 80, step: 1, tip: 'Energy cost for a plant to spawn a child.', fmt: (v: number) => '' + v }
+		{ key: 'reproductionCost' as const, label: 'Reproduction Cost', min: 10, max: 80, step: 1, tip: 'Energy cost for a plant to spawn a child.', fmt: (v: number) => '' + v },
+		{ key: 'growthRatePlant' as const, label: 'Plant Growth', min: 0, max: 10, step: 0.5, tip: 'Energy gained per tick as % of current energy. Higher = faster regrowth.', fmt: (v: number) => v + '%' }
 	];
 
 	function syncSettings() {
@@ -126,9 +139,9 @@
 			entropyRatePlant: settings.entropyRatePlant,
 			moveCost: settings.moveCost,
 			eatGain: settings.eatGain,
-			searchRadius: settings.searchRadius,
 			reproductionThreshold: settings.reproductionThreshold,
-			reproductionCost: settings.reproductionCost
+			reproductionCost: settings.reproductionCost,
+			growthRatePlant: settings.growthRatePlant
 		});
 		saveState();
 	}
@@ -146,18 +159,14 @@
 	const seekers = $derived(world.cells.filter(c => c.type === 'SEEKER').length);
 	const plants = $derived(world.cells.filter(c => c.type === 'PLANT').length);
 	const dust = $derived(world.cells.filter(c => c.type === 'DUST').length);
+	const scouts = $derived(world.cells.filter(c => c.type === 'SEEKER' && c.species === 'scout').length);
+	const hunters = $derived(world.cells.filter(c => c.type === 'SEEKER' && c.species === 'hunter').length);
+	const drifters = $derived(world.cells.filter(c => c.type === 'SEEKER' && c.species === 'drifter').length);
 </script>
 
 <div class="container">
 	<aside class="sidebar">
 		<h1>The Entropy Engine</h1>
-
-		<div class="section">
-			<h2>Controls</h2>
-			<button onclick={togglePlay}>{isRunning ? 'Pause' : 'Play'}</button>
-			<button onclick={step}>Step</button>
-			<button onclick={reset}>Reset</button>
-		</div>
 
 		<div class="section">
 			<h2>Simulation</h2>
@@ -210,11 +219,18 @@
 		<div class="section stats">
 			<h2>Stats</h2>
 			<p>Tick: {world.tick}</p>
-			<p>Seekers: {seekers}</p>
 			<p>Plants: {plants}</p>
 			<p>Dust: {dust}</p>
 			<p>Total: {world.cells.length}</p>
-			<p>ms/tick: {tickTime.toFixed(2)}</p>
+			<p>ms/tick: {avgTickTime.toFixed(3)}</p>
+			<h3>Species</h3>
+			{#each Object.entries(SPECIES_CONFIG) as [species, config]}
+				<p class="species-row">
+					<span class="dot" style="background: hsl({species === 'scout' ? 0 : species === 'hunter' ? 30 : 270}, 75%, 50%)"></span>
+					{species}: {world.cells.filter(c => c.type === 'SEEKER' && c.species === species).length}
+					<span class="dim">(perception: {config.perception})</span>
+				</p>
+			{/each}
 		</div>
 
 		{#if selectedCell}
@@ -233,13 +249,35 @@
 				{#if selectedCell.metadata.lastDirection}
 					<p>Direction: ({selectedCell.metadata.lastDirection.x}, {selectedCell.metadata.lastDirection.y})</p>
 				{/if}
+				{#if selectedCell.metadata.lastAction}
+					<p>Action: {selectedCell.metadata.lastAction}</p>
+				{/if}
+				{#if selectedCell.metadata.lastReason}
+					<p class="dim">↳ {selectedCell.metadata.lastReason}</p>
+				{/if}
 			</div>
 		{/if}
+
+		<div class="section event-log">
+			<h2>Log</h2>
+			<button class="dim" onclick={() => eventLog = []}>clear</button>
+			<div class="log-entries">
+				{#each [...eventLog].reverse() as entry}
+					<p class={entry.startsWith('─') ? 'tick-header' : ''}>{entry}</p>
+				{/each}
+			</div>
+		</div>
 	</aside>
 
 	<main>
-		<Canvas {world} cellSize={20} oncellclick={handleCellClick} />
+		<Canvas {world} cellSize={20} oncellclick={handleCellClick} {selectedCell} />
 	</main>
+
+	<div class="controls-float">
+		<button onclick={togglePlay}>{isRunning ? 'Pause' : 'Play'}</button>
+		<button onclick={step}>Step</button>
+		<button onclick={reset}>Reset</button>
+	</div>
 </div>
 
 <style>
@@ -339,14 +377,41 @@
 		background: #444;
 	}
 
-	.button-group {
+	.controls-float {
+		position: fixed;
+		bottom: 1rem;
+		left: calc(280px + 1rem);
+		z-index: 100;
+		background: #1a1a1a;
+		border: 1px solid #444;
+		border-radius: 8px;
+		padding: 0.5rem;
 		display: flex;
-		flex-wrap: wrap;
+		gap: 0.25rem;
+		box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 	}
 
-	.stats p, .inspector p {
+	.controls-float button {
+		margin: 0;
+	}
+
+	.stats p, .inspector p, .species-row {
 		margin: 0.25rem 0;
 		font-size: 0.9rem;
+	}
+
+	.species-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+
+	.dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
 	}
 
 	.inspector {
@@ -366,6 +431,32 @@
 
 	.dim:hover {
 		color: #999;
+	}
+
+	.event-log {
+		border-top: 1px solid #333;
+		padding-top: 0.5rem;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.log-entries {
+		max-height: 300px;
+		overflow-y: auto;
+		font-size: 0.75rem;
+		font-family: monospace;
+		line-height: 1.5;
+		margin-top: 0.25rem;
+	}
+
+	.log-entries p {
+		margin: 0;
+		white-space: nowrap;
+	}
+
+	.log-entries .tick-header {
+		color: #555;
+		margin-top: 0.25rem;
 	}
 
 	main {
