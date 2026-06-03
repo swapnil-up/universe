@@ -6,6 +6,49 @@
 	import type { SimController } from '$lib/engine/simulation';
 	import { TICK_RATE, HISTORY_SIZE, DEFAULT_SETTINGS, GRID_SIZE, INITIAL_SEEKERS, INITIAL_PLANTS, PRESETS, SPECIES_CONFIG } from '$lib/engine/data';
 	import type { Cell, World, WorldSettings, WorldPreset, Species } from '$lib/engine/data';
+	import { diffRenderer, cellRenderer } from '$lib/engine/renderer';
+	import type { Renderer } from '$lib/engine/renderer';
+
+	const LOG_CAPACITY = 10000;
+
+	class EventRing {
+		readonly buffer = new Array<string>(LOG_CAPACITY);
+		head = 0;
+		count = 0;
+
+		push(...items: string[]): void {
+			for (const item of items) {
+				this.buffer[this.head] = item;
+				this.head = (this.head + 1) % LOG_CAPACITY;
+				if (this.count < LOG_CAPACITY) this.count++;
+			}
+		}
+
+		clear(): void {
+			this.head = 0;
+			this.count = 0;
+		}
+
+		toArray(): string[] {
+			const result = new Array(this.count);
+			const start = this.count < LOG_CAPACITY ? 0 : this.head;
+			for (let i = 0; i < this.count; i++) {
+				result[i] = this.buffer[(start + i) % LOG_CAPACITY];
+			}
+			return result;
+		}
+
+		toReversedArray(): string[] {
+			const result = new Array(this.count);
+			let idx = this.head - 1;
+			for (let i = 0; i < this.count; i++) {
+				if (idx < 0) idx = LOG_CAPACITY - 1;
+				result[i] = this.buffer[idx];
+				idx--;
+			}
+			return result;
+		}
+	}
 
 	const STORAGE_KEY = 'entropy-engine-state';
 
@@ -43,6 +86,7 @@
 	let isRunning = $state(false);
 	let tickRate = $state(TICK_RATE);
 	let tickTimes = $state<number[]>([]);
+	let renderTimes = $state<number[]>([]);
 	const TICK_WINDOW = 30;
 	let seed = $state(12345);
 	let settings = $state<WorldSettings>({ ...DEFAULT_SETTINGS });
@@ -51,7 +95,10 @@
 	let initialSeekersCount = $state(INITIAL_SEEKERS);
 	let initialPlantsCount = $state(INITIAL_PLANTS);
 	let selectedCell = $state<Cell | null>(null);
+	let eventRing = new EventRing();
 	let eventLog = $state<string[]>([]);
+	let useDiffRenderer = $state(true);
+	let currentRenderer: Renderer = $derived(useDiffRenderer ? diffRenderer : cellRenderer);
 	let sim: SimController;
 
 	function handleCellClick(pos: { x: number; y: number }) {
@@ -65,7 +112,8 @@
 		history = [...history.slice(-(HISTORY_SIZE - 1)), newWorld];
 		if (events.length > 0) {
 			const tickHeader = `─ tick ${newWorld.tick} ─`;
-			eventLog = [...eventLog, tickHeader, ...events].slice(-10000);
+			eventRing.push(tickHeader, ...events);
+			eventLog = eventRing.toReversedArray();
 		}
 		if (newWorld.cells.length === 0) {
 			isRunning = false;
@@ -77,6 +125,16 @@
 			? tickTimes.reduce((a, b) => a + b, 0) / tickTimes.length
 			: 0
 	);
+
+	const avgRenderTime = $derived(
+		renderTimes.length > 0
+			? renderTimes.reduce((a, b) => a + b, 0) / renderTimes.length
+			: 0
+	);
+
+	function onRender(elapsed: number) {
+		renderTimes = [...renderTimes, elapsed].slice(-TICK_WINDOW);
+	}
 
 	onMount(() => {
 		const loaded = loadState();
@@ -119,6 +177,8 @@
 		history = [];
 		isRunning = false;
 		tickTimes = [];
+		eventRing.clear();
+		eventLog = [];
 		saveState();
 	}
 
@@ -156,12 +216,18 @@
 		syncSettings();
 	}
 
-	const seekers = $derived(world.cells.filter(c => c.type === 'SEEKER').length);
-	const plants = $derived(world.cells.filter(c => c.type === 'PLANT').length);
-	const dust = $derived(world.cells.filter(c => c.type === 'DUST').length);
-	const scouts = $derived(world.cells.filter(c => c.type === 'SEEKER' && c.species === 'scout').length);
-	const hunters = $derived(world.cells.filter(c => c.type === 'SEEKER' && c.species === 'hunter').length);
-	const drifters = $derived(world.cells.filter(c => c.type === 'SEEKER' && c.species === 'drifter').length);
+	function computeStats(cells: readonly Cell[]) {
+		let plants = 0, dust = 0;
+		const speciesCount: Record<string, number> = { scout: 0, hunter: 0, drifter: 0 };
+		for (const c of cells) {
+			if (c.type === 'PLANT') plants++;
+			else if (c.type === 'DUST') dust++;
+			else if (c.type === 'SEEKER' && c.species) speciesCount[c.species]++;
+		}
+		return { plants, dust, speciesCount, total: cells.length };
+	}
+
+	const stats = $derived(computeStats(world.cells));
 </script>
 
 <div class="container">
@@ -219,15 +285,20 @@
 		<div class="section stats">
 			<h2>Stats</h2>
 			<p>Tick: {world.tick}</p>
-			<p>Plants: {plants}</p>
-			<p>Dust: {dust}</p>
-			<p>Total: {world.cells.length}</p>
+			<p>Plants: {stats.plants}</p>
+			<p>Dust: {stats.dust}</p>
+			<p>Total: {stats.total}</p>
 			<p>ms/tick: {avgTickTime.toFixed(3)}</p>
+			<p>ms/render: {avgRenderTime.toFixed(3)}</p>
+			<label>
+				<input type="checkbox" bind:checked={useDiffRenderer} />
+				Diff rendering
+			</label>
 			<h3>Species</h3>
 			{#each Object.entries(SPECIES_CONFIG) as [species, config]}
 				<p class="species-row">
 					<span class="dot" style="background: hsl({species === 'scout' ? 0 : species === 'hunter' ? 30 : 270}, 75%, 50%)"></span>
-					{species}: {world.cells.filter(c => c.type === 'SEEKER' && c.species === species).length}
+					{species}: {stats.speciesCount[species]}
 					<span class="dim">(perception: {config.perception})</span>
 				</p>
 			{/each}
@@ -260,9 +331,9 @@
 
 		<div class="section event-log">
 			<h2>Log</h2>
-			<button class="dim" onclick={() => eventLog = []}>clear</button>
+			<button class="dim" onclick={() => { eventRing.clear(); eventLog = []; }}>clear</button>
 			<div class="log-entries">
-				{#each [...eventLog].reverse() as entry}
+				{#each eventLog as entry}
 					<p class={entry.startsWith('─') ? 'tick-header' : ''}>{entry}</p>
 				{/each}
 			</div>
@@ -270,7 +341,7 @@
 	</aside>
 
 	<main>
-		<Canvas {world} cellSize={20} oncellclick={handleCellClick} {selectedCell} />
+		<Canvas {world} cellSize={20} oncellclick={handleCellClick} {selectedCell} renderer={currentRenderer} onrender={onRender} />
 	</main>
 
 	<div class="controls-float">

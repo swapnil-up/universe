@@ -2,7 +2,7 @@
 	import type { World, Cell } from '$lib/engine/data';
 	import { SPECIES_CONFIG } from '$lib/engine/data';
 	import type { Renderer } from '$lib/engine/renderer';
-	import { cellRenderer } from '$lib/engine/renderer';
+	import { diffRenderer } from '$lib/engine/renderer';
 
 	interface Props {
 		world: World;
@@ -10,9 +10,10 @@
 		renderer?: Renderer;
 		oncellclick?: (pos: { x: number; y: number }) => void;
 		selectedCell?: Cell | null;
+		onrender?: (elapsed: number) => void;
 	}
 
-	let { world, cellSize = 20, renderer = cellRenderer, oncellclick, selectedCell }: Props = $props();
+	let { world, cellSize = 20, renderer = diffRenderer, oncellclick, selectedCell, onrender }: Props = $props();
 
 	let canvas: HTMLCanvasElement;
 	let container: HTMLDivElement;
@@ -34,7 +35,10 @@
 		if (!canvas) return;
 		const ctx = canvas.getContext('2d');
 		if (!ctx) return;
+		const t0 = performance.now();
 		renderer.render(ctx, world, cellSize);
+		const t1 = performance.now();
+		if (onrender) requestAnimationFrame(() => onrender(t1 - t0));
 
 		if (selectedCell) {
 			drawOverlay(ctx, selectedCell);

@@ -164,21 +164,17 @@ function perceive(cell: Cell, index: Map<string, Cell>, ctx: TickContext, radius
 
 // ---- Pipeline stages ----
 
-function stageGrowth(ctx: TickContext): TickContext {
+function stageGrowthAndEntropy(ctx: TickContext): TickContext {
 	return {
 		...ctx,
 		cells: ctx.cells.map(c => {
-			if (c.type !== 'PLANT') return c;
-			const gain = c.energy * (ctx.settings.growthRatePlant / 100);
-			return { ...c, energy: Math.min(100, c.energy + gain) };
+			let cell = c;
+			if (cell.type === 'PLANT') {
+				const gain = cell.energy * (ctx.settings.growthRatePlant / 100);
+				cell = { ...cell, energy: Math.min(100, cell.energy + gain) };
+			}
+			return applyEntropy(cell, ctx.settings);
 		})
-	};
-}
-
-function stageEntropy(ctx: TickContext): TickContext {
-	return {
-		...ctx,
-		cells: ctx.cells.map(c => applyEntropy(c, ctx.settings))
 	};
 }
 
@@ -336,12 +332,11 @@ function stageDustLifecycle(ctx: TickContext): TickContext {
 
 export function nextTick(world: World): { world: World; events: readonly string[] } {
 	const ctx = pipe(
-		stageGrowth,
-		stageEntropy,
+		stageGrowthAndEntropy,
 		stageAgent,
 		stageDustLifecycle
 	)({
-		cells: [...world.cells],
+		cells: world.cells,
 		deadIds: new Set(),
 		nextId: world.cells.reduce((max, c) => Math.max(max, c.id), 0) + 1,
 		width: world.width,
