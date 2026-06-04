@@ -54,14 +54,15 @@ type CellSnapshot = {
 	readonly energy: number;
 };
 
-let prevSnapshot = new Map<string, CellSnapshot>();
-let isFirstRender = true;
-let prevGridWidth = 0;
-let prevGridHeight = 0;
+export function createDiffRenderer(): Renderer {
+	let prevSnapshot = new Map<string, CellSnapshot>();
+	let isFirstRender = true;
+	let prevGridWidth = 0;
+	let prevGridHeight = 0;
 
-export const diffRenderer: Renderer = {
-	render(ctx, world, cellSize) {
-		const snapshot = new Map<string, CellSnapshot>();
+	return {
+		render(ctx, world, cellSize) {
+			const snapshot = new Map<string, CellSnapshot>();
 		for (const cell of world.cells) {
 			snapshot.set(`${cell.x},${cell.y}`, {
 				x: cell.x, y: cell.y,
@@ -109,5 +110,6 @@ export const diffRenderer: Renderer = {
 		}
 
 		prevSnapshot = snapshot;
-	}
-};
+		}
+	};
+}

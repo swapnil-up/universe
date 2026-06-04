@@ -40,18 +40,22 @@ export function createSimulation(
 	let currentWorld = cloneWorld(initialWorld);
 	let currentTickRate = tickRate;
 	let isRunning = false;
-	let intervalId: ReturnType<typeof setInterval> | null = null;
+	let timerId: ReturnType<typeof setTimeout> | null = null;
 	let pending = false;
 	let tickStart = 0;
+	let generation = 0;
 
-	worker.onmessage = (e: MessageEvent<{ type: string; world: World; events: string[] }>) => {
+	worker.onmessage = (e: MessageEvent<{ type: string; world: World; events: string[]; generation: number }>) => {
 		if (e.data.type !== 'tick-result') return;
+		if (e.data.generation !== generation) return;
 		pending = false;
 		const elapsed = performance.now() - tickStart;
 		currentWorld = e.data.world;
 		onTick(currentWorld, elapsed, e.data.events);
 		if (currentWorld.cells.length === 0) {
 			stop();
+		} else {
+			scheduleNext();
 		}
 	};
 
@@ -63,20 +67,25 @@ export function createSimulation(
 		if (pending) return;
 		pending = true;
 		tickStart = performance.now();
-		worker.postMessage({ type: 'tick', world: currentWorld });
+		worker.postMessage({ type: 'tick', world: currentWorld, generation });
+	}
+
+	function scheduleNext() {
+		if (!isRunning) return;
+		timerId = setTimeout(tick, 1000 / currentTickRate);
 	}
 
 	function start() {
 		if (isRunning) return;
 		isRunning = true;
-		intervalId = setInterval(tick, 1000 / currentTickRate);
+		scheduleNext();
 	}
 
 	function stop() {
 		isRunning = false;
-		if (intervalId !== null) {
-			clearInterval(intervalId);
-			intervalId = null;
+		if (timerId !== null) {
+			clearTimeout(timerId);
+			timerId = null;
 		}
 	}
 
@@ -89,19 +98,17 @@ export function createSimulation(
 		stop();
 		currentWorld = cloneWorld(world);
 		pending = false;
+		generation++;
 		onTick(currentWorld, 0, []);
 	}
 
 	function setTickRate(rate: number) {
 		currentTickRate = rate;
-		if (isRunning) {
-			clearInterval(intervalId!);
-			intervalId = setInterval(tick, 1000 / rate);
-		}
 	}
 
 	function updateSettings(settings: World['settings']) {
 		currentWorld = { ...currentWorld, settings: { ...settings } };
+		generation++;
 		onTick(currentWorld, 0, []);
 	}
 

@@ -69,7 +69,7 @@ export const DEFAULT_SETTINGS: WorldSettings = {
 	entropyRateSeeker: 1.0,
 	entropyRatePlant: 0.5,
 	moveCost: 2,
-	eatGain: 20,
+	eatGain: 16,
 	reproductionThreshold: 80,
 	reproductionCost: 40,
 	growthRatePlant: 2.0,
@@ -140,6 +140,14 @@ export const INITIAL_PLANTS = 10;
 export const DUST_TICKS = 5;
 export const DUST_DECAY_RATE = 1;
 export const INITIAL_CHILD_ENERGY = 40;
+export const PLANT_MAX_AGE = 80;
+export const POLLEN_RADIUS = 6;
+export const CROWDING_THRESHOLD = 4;
+export const CROWDING_PENALTY = 2.0;
+export const CARNIVORE_GAIN_MULTIPLIER = 1.5;
+export const SEEKER_REPRO_THRESHOLD = 88;
+export const SEEKER_REPRO_COST = 45;
+export const MUTATION_RATE = 0.1;
 export const HISTORY_SIZE = 10;
 export const TICK_RATE = 2;
 

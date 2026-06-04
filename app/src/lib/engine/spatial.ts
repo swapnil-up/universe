@@ -1,16 +1,11 @@
 import type { Cell } from './data';
-import { wrapCoordinate } from './primitives';
+
+export function wrapCoordinate(value: number, max: number): number {
+	return ((value % max) + max) % max;
+}
 
 export function cellKey(x: number, y: number): string {
 	return `${x},${y}`;
-}
-
-export function buildIndex(cells: readonly Cell[]): Map<string, Cell> {
-	const index = new Map<string, Cell>();
-	for (const c of cells) {
-		index.set(cellKey(c.x, c.y), c);
-	}
-	return index;
 }
 
 export function findInRadius(

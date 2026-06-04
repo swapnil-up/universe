@@ -78,8 +78,8 @@ This is a learning project exploring functional programming concepts. Pull reque
 
 ---
 
-<div align="center">
+<!-- <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=swapnil-up/universe&type=Date)](https://star-history.com/#swapnil-up/universe&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=swapnil-up/universe&type=Date)](https://star-history.com/#swapnil-up/universe&Date) -->
 
-</div>
+<!-- </div> -->

@@ -1,9 +1,7 @@
 import type { Cell, World, WorldSettings, Species, CellAction, Perception, Decide } from './data';
-import { DEFAULT_SETTINGS, GRID_SIZE, INITIAL_SEEKERS, INITIAL_PLANTS, DUST_TICKS, SPECIES, SPECIES_CONFIG, INITIAL_CHILD_ENERGY } from './data';
+import { DEFAULT_SETTINGS, GRID_SIZE, INITIAL_SEEKERS, INITIAL_PLANTS, DUST_TICKS, DUST_DECAY_RATE, SPECIES, SPECIES_CONFIG, INITIAL_CHILD_ENERGY, PLANT_MAX_AGE, POLLEN_RADIUS, CROWDING_THRESHOLD, CROWDING_PENALTY, CARNIVORE_GAIN_MULTIPLIER, SEEKER_REPRO_THRESHOLD, SEEKER_REPRO_COST, MUTATION_RATE } from './data';
 export { GRID_SIZE } from './data';
-import { applyEntropy } from './physics';
-import { buildIndex, findInRadius, findEmptyNeighbors, cellKey } from './spatial';
-import { wrapCoordinate, pipe, times } from './primitives';
+import { findInRadius, findEmptyNeighbors, cellKey, wrapCoordinate } from './spatial';
 import { nextRandom, randomDir } from './rng';
 import type { Dir } from './rng';
 
@@ -16,6 +14,7 @@ interface TickContext {
 	readonly settings: World['settings'];
 	readonly tick: number;
 	readonly events: readonly string[];
+	readonly cellIndex: Map<string, Cell>;
 }
 
 // ---- Initial world ----
@@ -36,7 +35,7 @@ export function createInitialWorld(
 	}
 	let nextId = 0;
 	const cells = [
-		...times(initialSeekers, () => ({
+		...Array.from({ length: initialSeekers }, () => ({
 			id: nextId++,
 			type: 'SEEKER' as const,
 			species: SPECIES[Math.floor(nextRand() * SPECIES.length)] as Species,
@@ -45,7 +44,7 @@ export function createInitialWorld(
 			y: Math.floor(nextRand() * height),
 			metadata: { age: 0, seed: Math.floor(nextRand() * 0x7fffffff) }
 		})),
-		...times(initialPlants, () => ({
+		...Array.from({ length: initialPlants }, () => ({
 			id: nextId++,
 			type: 'PLANT' as const,
 			energy: 40 + Math.floor(nextRand() * 40),
@@ -69,41 +68,72 @@ function toward(target: Cell, self: Cell, rand: number): Dir {
 }
 
 const scoutDecide: Decide = (perception, rand) => {
-	const { own, nearbyPlants, settings, width, height } = perception;
+	const { own, nearbyPlants, settings, width, height, emptyNeighbors } = perception;
 
-	if (nearbyPlants.length > 0) {
-		if (own.energy < settings.reproductionThreshold) {
-			return { type: 'EAT', targetId: nearbyPlants[0].id, reason: `hungry (${Math.floor(own.energy)}<${settings.reproductionThreshold})` };
-		}
-		return moveToward(nearbyPlants[0], own, width, height, rand, `full (${Math.floor(own.energy)}), toward plant #${nearbyPlants[0].id}`);
+	if (own.energy >= SEEKER_REPRO_THRESHOLD && emptyNeighbors.length > 0) {
+		return { type: 'REPRODUCE', childX: emptyNeighbors[0].x, childY: emptyNeighbors[0].y, reason: `scout repro (${Math.floor(own.energy)})` };
 	}
 
-	return moveRandom(own, width, height, rand, 'no plants in range');
+	if (nearbyPlants.length > 0) {
+		const nearest = nearbyPlants.reduce((a, b) =>
+			(Math.abs(a.x - own.x) + Math.abs(a.y - own.y)) < (Math.abs(b.x - own.x) + Math.abs(b.y - own.y)) ? a : b
+		);
+		if (own.energy < settings.reproductionThreshold) {
+			return { type: 'EAT', targetId: nearest.id, reason: `hungry (${Math.floor(own.energy)}<${settings.reproductionThreshold})` };
+		}
+		return moveToward(nearest, own, width, height, rand, `full (${Math.floor(own.energy)}), toward plant #${nearest.id}`);
+	}
+
+	return moveRandom(own, width, height, rand, own.metadata.lastDirection, 'no plants in range');
 };
 
 const hunterDecide: Decide = (perception, rand) => {
-	const { own, nearbyPlants, nearbySeekers, settings, width, height } = perception;
+	const { own, nearbyPlants, nearbySeekers, settings, width, height, emptyNeighbors } = perception;
 	const others = nearbySeekers.filter(c => c.id !== own.id);
 
+	if (own.energy >= SEEKER_REPRO_THRESHOLD && emptyNeighbors.length > 0) {
+		return { type: 'REPRODUCE', childX: emptyNeighbors[0].x, childY: emptyNeighbors[0].y, reason: `hunter repro (${Math.floor(own.energy)})` };
+	}
+
+	if (others.length > 0 && own.energy < settings.reproductionThreshold) {
+		const nearest = others.reduce((a, b) =>
+			(Math.abs(a.x - own.x) + Math.abs(a.y - own.y)) < (Math.abs(b.x - own.x) + Math.abs(b.y - own.y)) ? a : b
+		);
+		return { type: 'EAT', targetId: nearest.id, reason: `hunting #${nearest.id} (${Math.floor(own.energy)}<${settings.reproductionThreshold})` };
+	}
+
 	if (nearbyPlants.length > 0 && own.energy < settings.reproductionThreshold) {
-		return { type: 'EAT', targetId: nearbyPlants[0].id, reason: `hungry (${Math.floor(own.energy)}<${settings.reproductionThreshold})` };
+		const nearest = nearbyPlants.reduce((a, b) =>
+			(Math.abs(a.x - own.x) + Math.abs(a.y - own.y)) < (Math.abs(b.x - own.x) + Math.abs(b.y - own.y)) ? a : b
+		);
+		return { type: 'EAT', targetId: nearest.id, reason: `hungry (${Math.floor(own.energy)}<${settings.reproductionThreshold})` };
 	}
 
 	if (others.length > 0) {
-		return moveToward(others[0], own, width, height, rand, `chasing #${others[0].id}`);
+		const nearest = others.reduce((a, b) =>
+			(Math.abs(a.x - own.x) + Math.abs(a.y - own.y)) < (Math.abs(b.x - own.x) + Math.abs(b.y - own.y)) ? a : b
+		);
+		return moveToward(nearest, own, width, height, rand, `stalking #${nearest.id}`);
 	}
 
-	return moveRandom(own, width, height, rand, 'no targets in range');
+	return moveRandom(own, width, height, rand, own.metadata.lastDirection, 'no targets in range');
 };
 
 const drifterDecide: Decide = (perception, rand) => {
-	const { own, nearbyPlants, settings, width, height } = perception;
+	const { own, nearbyPlants, settings, width, height, emptyNeighbors } = perception;
 
-	if (nearbyPlants.length > 0 && own.energy < settings.reproductionThreshold) {
-		return { type: 'EAT', targetId: nearbyPlants[0].id, reason: `hungry (${Math.floor(own.energy)}<${settings.reproductionThreshold})` };
+	if (own.energy >= SEEKER_REPRO_THRESHOLD && emptyNeighbors.length > 0) {
+		return { type: 'REPRODUCE', childX: emptyNeighbors[0].x, childY: emptyNeighbors[0].y, reason: `drifter repro (${Math.floor(own.energy)})` };
 	}
 
-	return moveRandom(own, width, height, rand, 'drifting');
+	if (nearbyPlants.length > 0 && own.energy < settings.reproductionThreshold) {
+		const nearest = nearbyPlants.reduce((a, b) =>
+			(Math.abs(a.x - own.x) + Math.abs(a.y - own.y)) < (Math.abs(b.x - own.x) + Math.abs(b.y - own.y)) ? a : b
+		);
+		return { type: 'EAT', targetId: nearest.id, reason: `hungry (${Math.floor(own.energy)}<${settings.reproductionThreshold})` };
+	}
+
+	return moveRandom(own, width, height, rand, own.metadata.lastDirection, 'drifting');
 };
 
 const plantDecide: Decide = (perception, _rand) => {
@@ -127,8 +157,8 @@ function moveToward(target: Cell, self: Cell, width: number, height: number, ran
 	};
 }
 
-function moveRandom(self: Cell, width: number, height: number, rand: number, reason?: string): CellAction {
-	const dir = randomDir(rand);
+function moveRandom(self: Cell, width: number, height: number, rand: number, lastDirection?: Dir, reason?: string): CellAction {
+	const dir = (lastDirection && rand < 0.7) ? lastDirection : randomDir(rand);
 	return {
 		type: 'MOVE',
 		x: wrapCoordinate(self.x + dir.x, width),
@@ -164,16 +194,43 @@ function perceive(cell: Cell, index: Map<string, Cell>, ctx: TickContext, radius
 
 // ---- Pipeline stages ----
 
+function countNeighbors(x: number, y: number, occupied: Set<string>, width: number, height: number): number {
+	let count = 0;
+	for (let dx = -1; dx <= 1; dx++) {
+		for (let dy = -1; dy <= 1; dy++) {
+			if (dx === 0 && dy === 0) continue;
+			const nx = wrapCoordinate(x + dx, width);
+			const ny = wrapCoordinate(y + dy, height);
+			if (occupied.has(cellKey(nx, ny))) count++;
+		}
+	}
+	return count;
+}
+
 function stageGrowthAndEntropy(ctx: TickContext): TickContext {
+	const occupied = new Set(ctx.cellIndex.keys());
+
 	return {
 		...ctx,
 		cells: ctx.cells.map(c => {
 			let cell = c;
 			if (cell.type === 'PLANT') {
-				const gain = cell.energy * (ctx.settings.growthRatePlant / 100);
-				cell = { ...cell, energy: Math.min(100, cell.energy + gain) };
+				const neighbors = countNeighbors(cell.x, cell.y, occupied, ctx.width, ctx.height);
+				if (neighbors >= CROWDING_THRESHOLD) {
+					const penalty = cell.energy * (CROWDING_PENALTY / 100);
+					cell = { ...cell, energy: Math.max(0, cell.energy - penalty) };
+				} else {
+					const gain = cell.energy * (ctx.settings.growthRatePlant / 100);
+					cell = { ...cell, energy: Math.min(100, cell.energy + gain) };
+				}
 			}
-			return applyEntropy(cell, ctx.settings);
+			if (cell.type === 'DUST') {
+				cell = { ...cell, energy: cell.energy - DUST_DECAY_RATE };
+			} else {
+				const rate = cell.type === 'SEEKER' ? ctx.settings.entropyRateSeeker : ctx.settings.entropyRatePlant;
+				cell = { ...cell, energy: Math.max(0, cell.energy - cell.energy * (rate / 100)) };
+			}
+			return { ...cell, metadata: { ...cell.metadata, age: cell.metadata.age + 1 } };
 		})
 	};
 }
@@ -186,10 +243,11 @@ interface AgentState {
 	spawns: Cell[];
 	events: string[];
 	actions: Array<{ cellId: number; action: CellAction }>;
+	eats: Array<{ cellId: number; targetX: number; targetY: number }>;
 }
 
 function agentDecide(ctx: TickContext, s: AgentState): void {
-	const index = buildIndex(ctx.cells);
+	const index = ctx.cellIndex;
 	for (const cell of ctx.cells) {
 		if (s.deadIds.has(cell.id)) continue;
 		if (cell.type === 'DUST') continue;
@@ -210,9 +268,16 @@ function agentEat(s: AgentState, settings: World['settings']): void {
 		if (s.deadIds.has(action.targetId)) continue;
 
 		const cell = s.cellMap.get(cellId)!;
-		s.cellMap.set(cellId, { ...cell, energy: Math.min(100, cell.energy + settings.eatGain) });
+		const target = s.cellMap.get(action.targetId);
+		if (!target) continue;
+
+		const gain = cell.species === 'hunter' && target.type === 'SEEKER'
+			? Math.round(settings.eatGain * CARNIVORE_GAIN_MULTIPLIER)
+			: settings.eatGain;
+		s.cellMap.set(cellId, { ...cell, energy: Math.min(100, cell.energy + gain) });
 		s.deadIds.add(action.targetId);
-		s.events.push(`#${cellId} ${cell.species ?? '?'} ate #${action.targetId}  |  ${action.reason}`);
+		s.eats.push({ cellId, targetX: target.x, targetY: target.y });
+		s.events.push(`#${cellId} ${cell.species ?? '?'} ate #${action.targetId} at (${target.x},${target.y})  |  ${action.reason}`);
 	}
 }
 
@@ -238,10 +303,31 @@ function agentMove(s: AgentState, ctx: TickContext): void {
 			metadata: {
 				...cell.metadata,
 				lastDirection: { x: action.x - cell.x, y: action.y - cell.y },
-				age: cell.metadata.age + 1
 			}
 		});
 		s.events.push(`#${cellId} ${cell.species ?? '?'} → (${action.x},${action.y})  |  ${action.reason}`);
+	}
+}
+
+function applyPostEatStepIn(s: AgentState): void {
+	for (const { cellId, targetX, targetY } of s.eats) {
+		const cell = s.cellMap.get(cellId)!;
+		const oldKey = cellKey(cell.x, cell.y);
+		const newKey = cellKey(targetX, targetY);
+
+		if (s.occupied.has(newKey)) continue;
+
+		s.occupied.delete(oldKey);
+		s.occupied.set(newKey, cellId);
+
+		s.cellMap.set(cellId, {
+			...cell,
+			x: targetX, y: targetY,
+			metadata: {
+				...cell.metadata,
+				lastDirection: { x: targetX - cell.x, y: targetY - cell.y },
+			}
+		});
 	}
 }
 
@@ -251,24 +337,88 @@ function agentReproduce(s: AgentState, ctx: TickContext): void {
 		if (s.deadIds.has(cellId)) continue;
 
 		const cell = s.cellMap.get(cellId)!;
-		if (cell.energy < ctx.settings.reproductionThreshold) continue;
-
 		const key = cellKey(action.childX, action.childY);
 		const taken = s.occupied.has(key) || s.spawns.some(c => c.x === action.childX && c.y === action.childY);
 		if (taken) continue;
 
-		s.cellMap.set(cellId, { ...cell, energy: cell.energy - ctx.settings.reproductionCost });
-		s.spawns.push({
-			id: s.nextId++,
-			type: 'PLANT',
-			energy: INITIAL_CHILD_ENERGY,
-			x: action.childX,
-			y: action.childY,
-			metadata: { age: 0, seed: cell.metadata.seed + ctx.tick + 1 }
-		});
-		s.occupied.set(key, -1);
-		s.events.push(`#${cellId} plant → 🌱#${s.nextId - 1}  |  ${action.reason}`);
+		if (cell.type === 'PLANT') {
+			if (cell.energy < ctx.settings.reproductionThreshold) continue;
+			s.cellMap.set(cellId, { ...cell, energy: cell.energy - ctx.settings.reproductionCost });
+			s.spawns.push({
+				id: s.nextId++,
+				type: 'PLANT',
+				energy: INITIAL_CHILD_ENERGY,
+				x: action.childX, y: action.childY,
+				metadata: { age: 0, seed: cell.metadata.seed + ctx.tick + 1 }
+			});
+			s.occupied.set(key, -1);
+			s.events.push(`#${cellId} plant → 🌱#${s.nextId - 1}  |  ${action.reason}`);
+		} else if (cell.type === 'SEEKER') {
+			if (cell.energy < SEEKER_REPRO_THRESHOLD) continue;
+			const childSeed = cell.metadata.seed + ctx.tick + 1;
+			const [mutRand] = nextRandom(childSeed);
+			const childSpecies = mutRand < MUTATION_RATE
+				? SPECIES.filter(s => s !== cell.species)[Math.floor(mutRand * (SPECIES.length - 1)) % (SPECIES.length - 1)]
+				: (cell.species ?? 'scout');
+			s.cellMap.set(cellId, { ...cell, energy: cell.energy - SEEKER_REPRO_COST });
+			s.spawns.push({
+				id: s.nextId++,
+				type: 'SEEKER',
+				species: childSpecies,
+				energy: INITIAL_CHILD_ENERGY,
+				x: action.childX, y: action.childY,
+				metadata: { age: 0, seed: childSeed }
+			});
+			s.occupied.set(key, -1);
+			s.events.push(`#${cellId} ${cell.species ?? 'scout'} → 🧬#${s.nextId - 1} (${childSpecies})  |  ${action.reason}`);
+		}
 	}
+}
+
+function stagePlantAgeLimit(ctx: TickContext): TickContext {
+	const events: string[] = [];
+	const occupied = new Set(ctx.cellIndex.keys());
+
+	const cells: Cell[] = [];
+	let nextId = ctx.nextId;
+
+	for (const c of ctx.cells) {
+		if (c.type !== 'PLANT' || c.metadata.age < PLANT_MAX_AGE) {
+			cells.push(c);
+			continue;
+		}
+
+		events.push(`#${c.id} plant died at tick ${ctx.tick} (age ${c.metadata.age})`);
+
+		const targets: Array<{ x: number; y: number }> = [];
+		for (let dx = -POLLEN_RADIUS; dx <= POLLEN_RADIUS; dx++) {
+			for (let dy = -POLLEN_RADIUS; dy <= POLLEN_RADIUS; dy++) {
+				if (dx === 0 && dy === 0) continue;
+				if (dx * dx + dy * dy > POLLEN_RADIUS * POLLEN_RADIUS) continue;
+				const nx = wrapCoordinate(c.x + dx, ctx.width);
+				const ny = wrapCoordinate(c.y + dy, ctx.height);
+				if (!occupied.has(cellKey(nx, ny))) {
+					targets.push({ x: nx, y: ny });
+				}
+			}
+		}
+
+		if (targets.length > 0) {
+			const [rand] = nextRandom(c.metadata.seed + ctx.tick);
+			const target = targets[Math.floor(rand * targets.length)];
+			cells.push({
+				id: nextId++,
+				type: 'PLANT',
+				energy: INITIAL_CHILD_ENERGY,
+				x: target.x, y: target.y,
+				metadata: { age: 0, seed: c.metadata.seed + ctx.tick + 1 },
+			});
+			occupied.add(cellKey(target.x, target.y));
+			events.push(`pollen → #${nextId - 1} at (${target.x},${target.y})`);
+		}
+	}
+
+	return { ...ctx, cells, nextId, events: [...ctx.events, ...events] };
 }
 
 function stageAgent(ctx: TickContext): TickContext {
@@ -280,23 +430,34 @@ function stageAgent(ctx: TickContext): TickContext {
 		spawns: [],
 		events: [],
 		actions: [],
+		eats: [],
 	};
 
+	// 1. All agents decide simultaneously from a snapshot — no agent sees another's decision this tick
 	agentDecide(ctx, s);
+	// 2. Eat resolves before move: eater consumes prey before it can flee (dead cells vacate position)
 	agentEat(s, ctx.settings);
 
+	// 3. Rebuild occupied map from survivors (eaten cells are gone, their positions are free)
 	for (const c of ctx.cells) {
 		if (!s.deadIds.has(c.id)) {
 			s.occupied.set(cellKey(c.x, c.y), c.id);
 		}
 	}
 
+	// 4. Step-in after occupied rebuild: eater moves onto vacated prey cell
+	applyPostEatStepIn(s);
+
+	// 5. Move after step-in so commands don't conflict; step-in uses the vacated position
 	agentMove(s, ctx);
+	// 6. Reproduction last: new cells appear at final positions after all movement resolves
 	agentReproduce(s, ctx);
 
+	const resultCells = [...Array.from(s.cellMap.values()), ...s.spawns];
 	return {
 		...ctx,
-		cells: [...Array.from(s.cellMap.values()), ...s.spawns],
+		cells: resultCells,
+		cellIndex: new Map(resultCells.map(c => [cellKey(c.x, c.y), c] as const)),
 		deadIds: s.deadIds,
 		nextId: s.nextId,
 		events: [...ctx.events, ...s.events],
@@ -331,20 +492,27 @@ function stageDustLifecycle(ctx: TickContext): TickContext {
 // ---- Public API ----
 
 export function nextTick(world: World): { world: World; events: readonly string[] } {
-	const ctx = pipe(
-		stageGrowthAndEntropy,
-		stageAgent,
-		stageDustLifecycle
-	)({
-		cells: world.cells,
-		deadIds: new Set(),
-		nextId: world.cells.reduce((max, c) => Math.max(max, c.id), 0) + 1,
-		width: world.width,
-		height: world.height,
-		settings: world.settings,
-		tick: world.tick + 1,
-		events: [],
-	});
+	const cellIndex = new Map(world.cells.map(c => [cellKey(c.x, c.y), c] as const));
+	const ctx = stageDustLifecycle(
+		// Plant age limit after agents: eaten plants vanish this tick, only aged-out plants release pollen
+		stagePlantAgeLimit(
+			// Agent phase after growth: agents see current tick's energy levels when deciding
+			stageAgent(
+				// Growth first: plants charge energy before agents eat or decide
+				stageGrowthAndEntropy({
+					cells: world.cells,
+					cellIndex,
+					deadIds: new Set(),
+					nextId: world.cells.reduce((max, c) => Math.max(max, c.id), 0) + 1,
+					width: world.width,
+					height: world.height,
+					settings: world.settings,
+					tick: world.tick + 1,
+					events: [],
+				}) // /stageGrowthAndEntropy
+			) // /stageAgent
+		) // /stagePlantAgeLimit
+	); // /stageDustLifecycle
 
 	return {
 		world: {

@@ -2,7 +2,7 @@
 	import type { World, Cell } from '$lib/engine/data';
 	import { SPECIES_CONFIG } from '$lib/engine/data';
 	import type { Renderer } from '$lib/engine/renderer';
-	import { diffRenderer } from '$lib/engine/renderer';
+	import { createDiffRenderer } from '$lib/engine/renderer';
 
 	interface Props {
 		world: World;
@@ -13,7 +13,7 @@
 		onrender?: (elapsed: number) => void;
 	}
 
-	let { world, cellSize = 20, renderer = diffRenderer, oncellclick, selectedCell, onrender }: Props = $props();
+	let { world, cellSize = 20, renderer = createDiffRenderer(), oncellclick, selectedCell, onrender }: Props = $props();
 
 	let canvas: HTMLCanvasElement;
 	let container: HTMLDivElement;

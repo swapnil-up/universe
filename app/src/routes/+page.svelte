@@ -6,53 +6,15 @@
 	import type { SimController } from '$lib/engine/simulation';
 	import { TICK_RATE, HISTORY_SIZE, DEFAULT_SETTINGS, GRID_SIZE, INITIAL_SEEKERS, INITIAL_PLANTS, PRESETS, SPECIES_CONFIG } from '$lib/engine/data';
 	import type { Cell, World, WorldSettings, WorldPreset, Species } from '$lib/engine/data';
-	import { diffRenderer, cellRenderer } from '$lib/engine/renderer';
+	import { createDiffRenderer, cellRenderer } from '$lib/engine/renderer';
 	import type { Renderer } from '$lib/engine/renderer';
-
-	const LOG_CAPACITY = 10000;
-
-	class EventRing {
-		readonly buffer = new Array<string>(LOG_CAPACITY);
-		head = 0;
-		count = 0;
-
-		push(...items: string[]): void {
-			for (const item of items) {
-				this.buffer[this.head] = item;
-				this.head = (this.head + 1) % LOG_CAPACITY;
-				if (this.count < LOG_CAPACITY) this.count++;
-			}
-		}
-
-		clear(): void {
-			this.head = 0;
-			this.count = 0;
-		}
-
-		toArray(): string[] {
-			const result = new Array(this.count);
-			const start = this.count < LOG_CAPACITY ? 0 : this.head;
-			for (let i = 0; i < this.count; i++) {
-				result[i] = this.buffer[(start + i) % LOG_CAPACITY];
-			}
-			return result;
-		}
-
-		toReversedArray(): string[] {
-			const result = new Array(this.count);
-			let idx = this.head - 1;
-			for (let i = 0; i < this.count; i++) {
-				if (idx < 0) idx = LOG_CAPACITY - 1;
-				result[i] = this.buffer[idx];
-				idx--;
-			}
-			return result;
-		}
-	}
+	import { EventRing } from '$lib/engine/event-ring';
 
 	const STORAGE_KEY = 'entropy-engine-state';
+	const STORAGE_VERSION = 1;
 
 	interface PersistedState {
+		version: number;
 		seed: number;
 		settings: WorldSettings;
 		gridSize: number;
@@ -66,19 +28,28 @@
 		try {
 			const raw = localStorage.getItem(STORAGE_KEY);
 			if (!raw) return null;
-			return JSON.parse(raw);
-		} catch { return null; }
+			const state = JSON.parse(raw);
+			if (state.version !== STORAGE_VERSION) {
+				console.warn('Ignoring saved state: expected version', STORAGE_VERSION, 'got', state.version);
+				return null;
+			}
+			return state;
+		} catch (e) {
+			console.warn('Failed to load saved state:', e);
+			return null;
+		}
 	}
 
 	function saveState() {
 		const idx = PRESETS.findIndex(p => p.name === selectedPreset.name);
 		const state: PersistedState = {
+			version: STORAGE_VERSION,
 			seed, settings: { ...settings }, gridSize,
 			initialSeekers: initialSeekersCount,
 			initialPlants: initialPlantsCount,
 			tickRate, presetIndex: idx >= 0 ? idx : 0
 		};
-		try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+		try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { console.warn('Failed to save state:', e); }
 	}
 
 	let world = $state(createInitialWorld());
@@ -98,7 +69,7 @@
 	let eventRing = new EventRing();
 	let eventLog = $state<string[]>([]);
 	let useDiffRenderer = $state(true);
-	let currentRenderer: Renderer = $derived(useDiffRenderer ? diffRenderer : cellRenderer);
+	let currentRenderer: Renderer = $derived(useDiffRenderer ? createDiffRenderer() : cellRenderer);
 	let sim: SimController;
 
 	function handleCellClick(pos: { x: number; y: number }) {
@@ -182,27 +153,29 @@
 		saveState();
 	}
 
-	const GOD_MODE_FIELDS = [
-		{ key: 'entropyRateSeeker' as const, label: 'Seeker Entropy', min: 0.1, max: 5, step: 0.1, tip: 'Energy lost per tick as % of current energy. Higher = faster starvation.', fmt: (v: number) => v + '%' },
-		{ key: 'entropyRatePlant' as const, label: 'Plant Entropy', min: 0.1, max: 5, step: 0.1, tip: 'Energy lost per tick as % of current energy for plants.', fmt: (v: number) => v + '%' },
-		{ key: 'moveCost' as const, label: 'Move Cost', min: 0, max: 10, step: 1, tip: 'Energy deducted per successful move.', fmt: (v: number) => '' + v },
-		{ key: 'eatGain' as const, label: 'Eat Gain', min: 5, max: 50, step: 1, tip: 'Energy gained when a seeker eats a plant.', fmt: (v: number) => '' + v },
-		{ key: 'reproductionThreshold' as const, label: 'Reproduction Threshold', min: 50, max: 100, step: 1, tip: 'Minimum energy for a plant to reproduce.', fmt: (v: number) => '' + v },
-		{ key: 'reproductionCost' as const, label: 'Reproduction Cost', min: 10, max: 80, step: 1, tip: 'Energy cost for a plant to spawn a child.', fmt: (v: number) => '' + v },
-		{ key: 'growthRatePlant' as const, label: 'Plant Growth', min: 0, max: 10, step: 0.5, tip: 'Energy gained per tick as % of current energy. Higher = faster regrowth.', fmt: (v: number) => v + '%' }
+	interface GodModeField {
+		key: keyof WorldSettings;
+		label: string;
+		min: number;
+		max: number;
+		step: number;
+		tip: string;
+		fmt: (v: number) => string;
+	}
+
+	const GOD_MODE_FIELDS: GodModeField[] = [
+		{ key: 'entropyRateSeeker', label: 'Seeker Entropy', min: 0.1, max: 5, step: 0.1, tip: 'Energy lost per tick as % of current energy. Higher = faster starvation.', fmt: (v: number) => v + '%' },
+		{ key: 'entropyRatePlant', label: 'Plant Entropy', min: 0.1, max: 5, step: 0.1, tip: 'Energy lost per tick as % of current energy for plants.', fmt: (v: number) => v + '%' },
+		{ key: 'moveCost', label: 'Move Cost', min: 0, max: 10, step: 1, tip: 'Energy deducted per successful move.', fmt: (v: number) => '' + v },
+		{ key: 'eatGain', label: 'Eat Gain', min: 5, max: 50, step: 1, tip: 'Energy gained when a seeker eats a plant.', fmt: (v: number) => '' + v },
+		{ key: 'reproductionThreshold', label: 'Reproduction Threshold', min: 50, max: 100, step: 1, tip: 'Minimum energy for a plant to reproduce.', fmt: (v: number) => '' + v },
+		{ key: 'reproductionCost', label: 'Reproduction Cost', min: 10, max: 80, step: 1, tip: 'Energy cost for a plant to spawn a child.', fmt: (v: number) => '' + v },
+		{ key: 'growthRatePlant', label: 'Plant Growth', min: 0, max: 10, step: 0.5, tip: 'Energy gained per tick as % of current energy. Higher = faster regrowth.', fmt: (v: number) => v + '%' }
 	];
 
 	function syncSettings() {
 		if (!sim) return;
-		sim.updateSettings({
-			entropyRateSeeker: settings.entropyRateSeeker,
-			entropyRatePlant: settings.entropyRatePlant,
-			moveCost: settings.moveCost,
-			eatGain: settings.eatGain,
-			reproductionThreshold: settings.reproductionThreshold,
-			reproductionCost: settings.reproductionCost,
-			growthRatePlant: settings.growthRatePlant
-		});
+		sim.updateSettings({ ...settings });
 		saveState();
 	}
 
